@@ -1,4 +1,4 @@
-from typing import Any, Callable
+from typing import Any, Callable, Coroutine
 import aiohttp, asyncio, zlib, sys, enum, json
 from aiohttp.client_ws import ClientWebSocketResponse
 
@@ -15,10 +15,13 @@ class Opcode(enum.Enum):
 	HELLO			= 10 #	Hello					Receive			Sent immediately after connecting, contains the heartbeat_interval to use.
 	HEARTBEAT_ACK	= 11 #	Heartbeat ACK			Receive			Sent in response to receiving a heartbeat to acknowledge that it has been received.
 
-Event = Callable[[dict[str, Any]], None]
+Event = Callable[[dict[str, Any]], Coroutine[Any, Any, None]]
 
 class Client():
-	def __init__(self):
+	def __init__(self, token: str, activity_name: str, activity_type: int):
+		self.token = token
+		self.activity_name = activity_name
+		self.activity_type = activity_type
 		self.events: dict[str, list[Event]] = {}
 		self.sequence_id = None
 	
@@ -30,10 +33,10 @@ class Client():
 			return event
 		return wrapperer
 
-	async def connect(self, token: str, activity_name: str, activity_type: int):
+	async def connect(self):
 		loop = asyncio.get_event_loop()
-		async with aiohttp.ClientSession() as session:
-			async with session.ws_connect('wss://gateway.discord.gg/?v=9&encoding=json&compress=zlib-stream') as websocket:
+		async with aiohttp.ClientSession() as self.session:
+			async with self.session.ws_connect('wss://gateway.discord.gg/?v=9&encoding=json&compress=zlib-stream') as websocket:
 				ZLIB_SUFFIX = b'\x00\x00\xff\xff'
 				buffer = bytearray()
 				inflator = zlib.decompressobj()
@@ -62,7 +65,7 @@ class Client():
 							await websocket.send_json({
 								'op': Opcode.IDENTIFY.value,
 								'd': {
-									'token': token,
+									'token': self.token,
 									'properties': {
 										'$os': sys.platform,
 										'$device': 'jdissupreme',
@@ -71,8 +74,8 @@ class Client():
 									'compress': True,
 									'presence': {
 										'activities': [{
-											'name': activity_name,
-											'type': activity_type,
+											'name': self.activity_name,
+											'type': self.activity_type,
 										}],
 										'status': 'online',
 										'afk': False,
@@ -80,7 +83,7 @@ class Client():
 									'intents': 0b111_1110_0000_0000,
 								},
 							})
-							asyncio.ensure_future(self.heartbeat(websocket, int(data['heartbeat_interval'])), loop=loop)
+							asyncio.ensure_future(self._heartbeat(websocket, int(data['heartbeat_interval'])), loop=loop)
 						
 						case Opcode.DISPATCH:
 							print("Dispatched", event_name, json.dumps(data, indent=4))
@@ -88,12 +91,12 @@ class Client():
 							assert event_name is not None
 							if event_name in self.events:
 								for event in self.events[event_name]:
-									event(data)
+									await event(data)
 						
 						case Opcode.HEARTBEAT_ACK:
 							print("Heartbeat ack")
 	
-	async def heartbeat(self, websocket: ClientWebSocketResponse, interval: int):
+	async def _heartbeat(self, websocket: ClientWebSocketResponse, interval: int):
 		while True:
 			beat = {
 				'op': Opcode.HEARTBEAT.value,
@@ -103,21 +106,36 @@ class Client():
 			print("Heartbeat", beat)
 			await asyncio.sleep(interval / 1000)
 
+	async def _request(self, method: str, endpoint: str, data: Any):
+		async with self.session.request(method, 'https://discord.com/api/v9' + endpoint,
+			headers={
+				'User-Agent': 'DiscordBot (https://github.com/jwright159/jdissupreme 1.0)',
+				'Authorization': 'Bot ' + self.token,
+			},
+			data=data,
+		) as res:
+			js = await res.json()
+			print("Requested", js)
+			return js
+
+	async def send(self, text: str, *, channel: str):
+		await self._request('POST', f'/channels/{channel}/messages', {
+			'content': text,
+		})
+
 if __name__ == '__main__':
-	client = Client()
+	with open('token.txt') as token_file:
+		t = token_file.read()
+	client = Client(t, 'jdissupreme', 0)
+
+	@client.on('READY')
+	async def on_ready(data: dict[str, Any]):
+		print("Ready")
 
 	@client.on('MESSAGE_CREATE')
-	def message(data: dict[str, Any]):
-		print('Messaged from', data['author']['username'], 'aka', data['member']['nick'], 'for', data['content'])
-
-	with open('token.txt') as token_file:
-		token = token_file.read()
-	asyncio.run(client.connect(token, 'jdissupreme', 0))
-
-	"""async with session.get('https://discord.com/api/v9',
-		headers={
-			'User-Agent': 'DiscordBot (https://github.com/jwright159/jdissupreme 1.0)',
-			'Authorization': 'wouldn't you like to know? ;)'
-		},
-	) as res:
-		print(await res.json())"""
+	async def message(data: dict[str, Any]):
+		print("Messaged from", data['author']['username'], "aka", data['member']['nick'], "for", data['content'])
+		if data['content'] == 'ping':
+			await client.send("pong", channel=data['channel_id'])
+	
+	asyncio.run(client.connect())
