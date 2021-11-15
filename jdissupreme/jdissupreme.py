@@ -1,6 +1,7 @@
 from functools import wraps
 from typing import Any, Callable, Coroutine, ParamSpec, TypeVar
 import aiohttp, asyncio, zlib, sys, enum, json
+from aiohttp.client_exceptions import ClientResponseError
 
 P = ParamSpec('P')
 T = TypeVar('T')
@@ -34,7 +35,7 @@ class Client:
 		self.activity_type = activity_type
 		self.events: dict[str, list[Event]] = {}
 		self.sequence_id = None
-		self._dm_channels: dict[str, str] = {}
+		self._dm_channels: dict[int, int] = {}
 
 		self.on('READY')(self._on_ready)
 	
@@ -138,26 +139,58 @@ class Client:
 					print("Rate limiting for", res.headers['x-ratelimit-reset-after'], "seconds")
 					await asyncio.sleep(float(res.headers['x-ratelimit-reset-after']))
 			return data
-
-	async def send(self, text: str, *, channel: str) -> None:
+	
+	async def send(self, text: str, *, channel: int) -> None:
 		await self._request('POST', f'/channels/{channel}/messages', {
 			'content': text,
 		})
 	
-	async def get_dm_channel(self, user: str) -> str:
-		if user not in self._dm_channels:
-			data = await self._request('POST', f'/users/@me/channels', {
-				'recipient_id': user,
-			})
-			self._dm_channels[user] = str(data['id'])
-		return self._dm_channels[user]
+	async def get_dm_channel(self, user: int) -> int | None:
+		try:
+			if user not in self._dm_channels:
+				data = await self._request('POST', f'/users/@me/channels', {
+					'recipient_id': user,
+				})
+				self._dm_channels[user] = int(data['id'])
+			return self._dm_channels[user]
+		except ClientResponseError as e:
+			if e.code == 400:
+				return None
+			else:
+				raise
 	
-	async def get_user(self, user: str) -> dict[str, Any]:
-		return await self._request('POST', f'/users/{user}')
+	async def get_user(self, user: int) -> dict[str, Any] | None:
+		try:
+			return await self._request('POST', f'/users/{user}')
+		except ClientResponseError as e:
+			if e.code == 405:
+				return None
+			else:
+				raise
 	
-	async def get_me(self, user: str) -> dict[str, Any]:
+	async def get_me(self) -> dict[str, Any]:
 		self.me: dict[str, Any] = await self._request('POST', f'/users/@me')
 		return self.me
+	
+	async def search_guild_member(self, guild: int, member_query: str) -> dict[str, Any] | None:
+		try:
+			return await self._request('GET', f'/guilds/{guild}/members/search', {
+				'query': member_query
+			})
+		except ClientResponseError as e:
+			if e.code == 400:
+				return None
+			else:
+				raise
+	
+	async def get_channel(self, channel: int) -> dict[str, Any] | None:
+		try:
+			return await self._request('GET', f'/channels/{channel}')
+		except ClientResponseError as e:
+			if e.code == 405:
+				return None
+			else:
+				raise
 
 if __name__ == '__main__':
 	with open('token.txt') as token_file:
