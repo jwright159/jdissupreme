@@ -1,25 +1,6 @@
 from typing import Any, Callable
 import aiohttp, asyncio, zlib, sys, enum, json
-
 from aiohttp.client_ws import ClientWebSocketResponse
-
-ZLIB_SUFFIX = b'\x00\x00\xff\xff'
-buffer = bytearray()
-inflator = zlib.decompressobj()
-
-def on_websocket_message(msg: bytes):
-	global buffer
-	buffer.extend(msg)
-
-	if len(msg) < 4 or msg[-4:] != ZLIB_SUFFIX:
-		return
-
-	msg = inflator.decompress(buffer)
-	buffer = bytearray()
-
-	# here you can treat `msg` as either JSON or ETF encoded,
-	# depending on your `encoding` param
-
 
 class Opcode(enum.Enum):
 	DISPATCH		= 0	 #	Dispatch				Receive			An event was dispatched.
