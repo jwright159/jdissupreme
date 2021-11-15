@@ -1,6 +1,17 @@
-from typing import Any, Callable, Coroutine
+from functools import wraps
+from typing import Any, Callable, Coroutine, ParamSpec, TypeVar
 import aiohttp, asyncio, zlib, sys, enum, json
 from aiohttp.client_ws import ClientWebSocketResponse
+
+P = ParamSpec('P')
+T = TypeVar('T')
+def main(f: Callable[P, T]) -> Callable[P, T]:
+	@wraps(f)
+	def wrapper(*args: P.args, **kwargs: P.kwargs):
+		if __name__ == '__main__':
+			f(*args, **kwargs)
+	return wrapper
+print = main(print)
 
 class Opcode(enum.Enum):
 	DISPATCH		= 0	 #	Dispatch				Receive			An event was dispatched.
@@ -17,7 +28,7 @@ class Opcode(enum.Enum):
 
 Event = Callable[[dict[str, Any]], Coroutine[Any, Any, None]]
 
-class Client():
+class Client:
 	def __init__(self, token: str, activity_name: str, activity_type: int):
 		self.token = token
 		self.activity_name = activity_name
@@ -35,7 +46,13 @@ class Client():
 
 	async def connect(self):
 		loop = asyncio.get_event_loop()
-		async with aiohttp.ClientSession() as self.session:
+		async with aiohttp.ClientSession(
+			headers={
+				'User-Agent': 'DiscordBot (https://github.com/jwright159/jdissupreme 1.0)',
+				'Authorization': 'Bot ' + self.token,
+			},
+			raise_for_status=True,
+		) as self.session:
 			async with self.session.ws_connect('wss://gateway.discord.gg/?v=9&encoding=json&compress=zlib-stream') as websocket:
 				ZLIB_SUFFIX = b'\x00\x00\xff\xff'
 				buffer = bytearray()
@@ -107,15 +124,13 @@ class Client():
 			await asyncio.sleep(interval / 1000)
 
 	async def _request(self, method: str, endpoint: str, data: Any):
-		async with self.session.request(method, 'https://discord.com/api/v9' + endpoint,
-			headers={
-				'User-Agent': 'DiscordBot (https://github.com/jwright159/jdissupreme 1.0)',
-				'Authorization': 'Bot ' + self.token,
-			},
-			data=data,
-		) as res:
+		async with self.session.request(method, 'https://discord.com/api/v9' + endpoint, data=data) as res:
 			js = await res.json()
 			print("Requested", js)
+			print(f"{res.headers['x-ratelimit-remaining']} requests remaining, resetting in {res.headers['x-ratelimit-reset-after']} seconds")
+			if res.headers['x-ratelimit-remaining'] == '0':
+				print("Rate limiting for", res.headers['x-ratelimit-reset-after'], "seconds")
+				await asyncio.sleep(float(res.headers['x-ratelimit-reset-after']))
 			return js
 
 	async def send(self, text: str, *, channel: str):
@@ -135,7 +150,12 @@ if __name__ == '__main__':
 	@client.on('MESSAGE_CREATE')
 	async def message(data: dict[str, Any]):
 		print("Messaged from", data['author']['username'], "aka", data['member']['nick'], "for", data['content'])
-		if data['content'] == 'ping':
-			await client.send("pong", channel=data['channel_id'])
+		contents = str(data['content']).split()
+		if contents[0].lower() == 'ping':
+			if len(contents) > 1:
+				for i in range(int(contents[1])):
+					await client.send(f"pong {i+1}", channel=data['channel_id'])
+			else:
+				await client.send("pong", channel=data['channel_id'])
 	
 	asyncio.run(client.connect())
