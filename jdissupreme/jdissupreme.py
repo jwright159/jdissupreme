@@ -34,6 +34,9 @@ class Client:
 		self.activity_type = activity_type
 		self.events: dict[str, list[Event]] = {}
 		self.sequence_id = None
+		self._dm_channels: dict[str, str] = {}
+
+		self.on('READY')(self._on_ready)
 	
 	def on(self, event_name: str) -> Callable[[Event], Event]:
 		if event_name not in self.events:
@@ -43,7 +46,7 @@ class Client:
 			return event
 		return wrapperer
 
-	async def connect(self):
+	async def connect(self) -> None:
 		loop = asyncio.get_event_loop()
 		async with aiohttp.ClientSession(
 			headers={
@@ -111,6 +114,9 @@ class Client:
 						
 						case Opcode.HEARTBEAT_ACK:
 							print("Heartbeat ack")
+
+	async def _on_ready(self, data: dict[str, Any]):
+		self.me: dict[str, Any] = data['user']
 	
 	async def _heartbeat(self, interval: int):
 		while True:
@@ -122,20 +128,36 @@ class Client:
 			print("Heartbeat", beat)
 			await asyncio.sleep(interval / 1000)
 
-	async def _request(self, method: str, endpoint: str, data: Any):
+	async def _request(self, method: str, endpoint: str, data: Any = None) -> dict[str, Any]:
 		async with self.session.request(method, 'https://discord.com/api/v9' + endpoint, data=data) as res:
-			js = await res.json()
-			print("Requested", js)
-			print(f"{res.headers['x-ratelimit-remaining']} requests remaining, resetting in {res.headers['x-ratelimit-reset-after']} seconds")
-			if res.headers['x-ratelimit-remaining'] == '0':
-				print("Rate limiting for", res.headers['x-ratelimit-reset-after'], "seconds")
-				await asyncio.sleep(float(res.headers['x-ratelimit-reset-after']))
-			return js
+			data = await res.json()
+			print("Requested", data)
+			if 'x-ratelimit-remaining' in res.headers:
+				print(f"{res.headers['x-ratelimit-remaining']} requests remaining, resetting in {res.headers['x-ratelimit-reset-after']} seconds")
+				if res.headers['x-ratelimit-remaining'] == '0':
+					print("Rate limiting for", res.headers['x-ratelimit-reset-after'], "seconds")
+					await asyncio.sleep(float(res.headers['x-ratelimit-reset-after']))
+			return data
 
-	async def send(self, text: str, *, channel: str):
+	async def send(self, text: str, *, channel: str) -> None:
 		await self._request('POST', f'/channels/{channel}/messages', {
 			'content': text,
 		})
+	
+	async def get_dm_channel(self, user: str) -> str:
+		if user not in self._dm_channels:
+			data = await self._request('POST', f'/users/@me/channels', {
+				'recipient_id': user,
+			})
+			self._dm_channels[user] = str(data['id'])
+		return self._dm_channels[user]
+	
+	async def get_user(self, user: str) -> dict[str, Any]:
+		return await self._request('POST', f'/users/{user}')
+	
+	async def get_me(self, user: str) -> dict[str, Any]:
+		self.me: dict[str, Any] = await self._request('POST', f'/users/@me')
+		return self.me
 
 if __name__ == '__main__':
 	with open('token.txt') as token_file:
@@ -150,11 +172,15 @@ if __name__ == '__main__':
 	async def message(data: dict[str, Any]):
 		print(f"Messaged from {data['author']['username']}{' aka ' + data['member']['nick'] if 'guild_id' in data else ''} for {data['content']}")
 		contents = str(data['content']).split()
-		if contents[0].lower() == 'ping':
-			if len(contents) > 1:
-				for i in range(int(contents[1])):
-					await client.send(f"pong {i+1}", channel=data['channel_id'])
-			else:
-				await client.send("pong", channel=data['channel_id'])
+		match contents[0].lower():
+			case 'ping':
+				if len(contents) > 1:
+					for i in range(int(contents[1])):
+						await client.send(f"pong {i+1}", channel=data['channel_id'])
+				else:
+					await client.send("pong", channel=data['channel_id'])
+			#case 'list':
+			#	await client._request('GET', '/users/@me/channels')
+			#	await client.send("Printed to console", channel=data['channel_id'])
 	
 	asyncio.run(client.connect())
