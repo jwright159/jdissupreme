@@ -1,7 +1,6 @@
 from functools import wraps
 from typing import Any, Callable, Coroutine, ParamSpec, TypeVar
 import aiohttp, asyncio, zlib, sys, enum, json
-from aiohttp.client_ws import ClientWebSocketResponse
 
 P = ParamSpec('P')
 T = TypeVar('T')
@@ -53,12 +52,12 @@ class Client:
 			},
 			raise_for_status=True,
 		) as self.session:
-			async with self.session.ws_connect('wss://gateway.discord.gg/?v=9&encoding=json&compress=zlib-stream') as websocket:
+			async with self.session.ws_connect('wss://gateway.discord.gg/?v=9&encoding=json&compress=zlib-stream') as self.websocket:
 				ZLIB_SUFFIX = b'\x00\x00\xff\xff'
 				buffer = bytearray()
 				inflator = zlib.decompressobj()
 
-				async for msg in websocket:
+				async for msg in self.websocket:
 					msg_bytes: bytes = msg.data # type: ignore
 					buffer.extend(msg_bytes)
 
@@ -79,7 +78,7 @@ class Client:
 					match opcode:
 						case Opcode.HELLO:
 							assert data is not None
-							await websocket.send_json({
+							await self.websocket.send_json({
 								'op': Opcode.IDENTIFY.value,
 								'd': {
 									'token': self.token,
@@ -100,7 +99,7 @@ class Client:
 									'intents': 0b111_1110_0000_0000,
 								},
 							})
-							asyncio.ensure_future(self._heartbeat(websocket, int(data['heartbeat_interval'])), loop=loop)
+							asyncio.ensure_future(self._heartbeat(int(data['heartbeat_interval'])), loop=loop)
 						
 						case Opcode.DISPATCH:
 							print("Dispatched", event_name, json.dumps(data, indent=4))
@@ -113,13 +112,13 @@ class Client:
 						case Opcode.HEARTBEAT_ACK:
 							print("Heartbeat ack")
 	
-	async def _heartbeat(self, websocket: ClientWebSocketResponse, interval: int):
+	async def _heartbeat(self, interval: int):
 		while True:
 			beat = {
 				'op': Opcode.HEARTBEAT.value,
 				'd': self.sequence_id,
 			}
-			await websocket.send_str(json.dumps(beat))
+			await self.websocket.send_str(json.dumps(beat))
 			print("Heartbeat", beat)
 			await asyncio.sleep(interval / 1000)
 
@@ -149,7 +148,7 @@ if __name__ == '__main__':
 
 	@client.on('MESSAGE_CREATE')
 	async def message(data: dict[str, Any]):
-		print("Messaged from", data['author']['username'], "aka", data['member']['nick'], "for", data['content'])
+		print(f"Messaged from {data['author']['username']}{' aka ' + data['member']['nick'] if 'guild_id' in data else ''} for {data['content']}")
 		contents = str(data['content']).split()
 		if contents[0].lower() == 'ping':
 			if len(contents) > 1:
