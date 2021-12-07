@@ -11,7 +11,7 @@ def main(f: Callable[P, T]) -> Callable[P, T]:
 		if __name__ == '__main__':
 			f(*args, **kwargs)
 	return wrapper
-print = main(print)
+print: Callable[..., None] = main(print) # type: ignore
 
 class Opcode(enum.Enum):
 	DISPATCH		= 0	 #	Dispatch				Receive			An event was dispatched.
@@ -38,6 +38,7 @@ class Client:
 		self._dm_channels: dict[int, int] = {}
 
 		self.on('READY')(self._on_ready)
+		self.on('MESSAGE_CREATE')(self._on_message_create)
 	
 	def on(self, event_name: str) -> Callable[[Event], Event]:
 		if event_name not in self.events:
@@ -118,6 +119,10 @@ class Client:
 
 	async def _on_ready(self, data: dict[str, Any]):
 		self.me: dict[str, Any] = data['user']
+	
+	async def _on_message_create(self, data: dict[str, Any]):
+		if 'guild_id' not in data:
+			self._dm_channels[int(data['author']['id'])] = int(data['channel_id'])
 	
 	async def _heartbeat(self, interval: int):
 		while True:
